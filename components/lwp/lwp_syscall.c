@@ -30,8 +30,8 @@
 
 #include "syscall_generic.h"
 
-#include <lwp.h>
-#include "lwp_signal.h"
+#include "libc_musl.h"
+#include "lwp_internal.h"
 #ifdef ARCH_MM_MMU
 #include <lwp_user_mm.h>
 #include <lwp_arch.h>
@@ -343,7 +343,7 @@ sysret_t sys_exit_group(int value)
 
         tid->clear_child_tid = RT_NULL;
         lwp_put_to_user(clear_child_tid, &t, sizeof t);
-        sys_futex(clear_child_tid, FUTEX_WAKE, 1, RT_NULL, RT_NULL, 0);
+        sys_futex(clear_child_tid, FUTEX_WAKE | FUTEX_PRIVATE, 1, RT_NULL, RT_NULL, 0);
     }
     lwp_terminate(lwp);
 
@@ -513,9 +513,9 @@ ssize_t sys_write(int fd, const void *buf, size_t nbyte)
 }
 
 /* syscall: "lseek" ret: "off_t" args: "int" "off_t" "int" */
-off_t sys_lseek(int fd, off_t offset, int whence)
+size_t sys_lseek(int fd, size_t offset, int whence)
 {
-    off_t ret = lseek(fd, offset, whence);
+    size_t ret = lseek(fd, offset, whence);
     return (ret < 0 ? GET_ERRNO() : ret);
 }
 
@@ -1303,7 +1303,7 @@ rt_base_t sys_brk(void *addr)
 }
 
 void *sys_mmap2(void *addr, size_t length, int prot,
-        int flags, int fd, off_t pgoffset)
+        int flags, int fd, size_t pgoffset)
 {
     return lwp_mmap2(addr, length, prot, flags, fd, pgoffset);
 }
@@ -6126,13 +6126,52 @@ sysret_t sys_epoll_pwait(int fd,
     return (ret < 0 ? GET_ERRNO() : ret);
 }
 
-sysret_t sys_ftruncate(int fd, off_t length)
+sysret_t sys_ftruncate(int fd, size_t length)
 {
     int ret;
 
     ret = ftruncate(fd, length);
 
     return (ret < 0 ? GET_ERRNO() : ret);
+}
+
+sysret_t sys_utimensat(int __fd, const char *__path, const struct timespec __times[2], int __flags)
+{
+#ifdef RT_USING_DFS_V2
+#ifdef ARCH_MM_MMU
+    int ret = -1;
+    rt_size_t len = 0;
+    char *kpath = RT_NULL;
+
+    len = lwp_user_strlen(__path);
+    if (len <= 0)
+    {
+        return -EINVAL;
+    }
+
+    kpath = (char *)kmem_get(len + 1);
+    if (!kpath)
+    {
+        return -ENOMEM;
+    }
+
+    lwp_get_from_user(kpath, (void *)__path, len + 1);
+    ret = utimensat(__fd, kpath, __times, __flags);
+
+    kmem_put(kpath);
+
+    return ret;
+#else
+    if (!lwp_user_accessable((void *)__path, 1))
+    {
+        return -EFAULT;
+    }
+    int ret = utimensat(__fd, __path, __times, __flags);
+    return ret;
+#endif
+#else
+    return -1;
+#endif
 }
 
 sysret_t sys_chmod(const char *fileName, mode_t mode)
@@ -6176,10 +6215,10 @@ sysret_t sys_reboot(int magic)
     return 0;
 }
 
-ssize_t sys_pread64(int fd, void *buf, int size, off_t offset)
+ssize_t sys_pread64(int fd, void *buf, int size, size_t offset)
 #ifdef RT_USING_DFS_V2
 {
-    ssize_t pread(int fd, void *buf, size_t len, off_t offset);
+    ssize_t pread(int fd, void *buf, size_t len, size_t offset);
 #ifdef ARCH_MM_MMU
     ssize_t ret = -1;
     void *kmem = RT_NULL;
@@ -6230,10 +6269,10 @@ ssize_t sys_pread64(int fd, void *buf, int size, off_t offset)
 }
 #endif
 
-ssize_t sys_pwrite64(int fd, void *buf, int size, off_t offset)
+ssize_t sys_pwrite64(int fd, void *buf, int size, size_t offset)
 #ifdef RT_USING_DFS_V2
 {
-    ssize_t pwrite(int fd, const void *buf, size_t len, off_t offset);
+    ssize_t pwrite(int fd, const void *buf, size_t len, size_t offset);
 #ifdef ARCH_MM_MMU
     ssize_t ret = -1;
     void *kmem = RT_NULL;
@@ -6661,6 +6700,7 @@ const static struct rt_syscall_def func_table[] =
     SYSCALL_SIGN(sys_memfd_create),                     /* 200 */
     SYSCALL_SIGN(sys_ftruncate),
     SYSCALL_SIGN(sys_setitimer),
+    SYSCALL_SIGN(sys_utimensat),
 };
 
 const void *lwp_get_sys_api(rt_uint32_t number)

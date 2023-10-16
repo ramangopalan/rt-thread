@@ -331,6 +331,7 @@ rt_lwp_t lwp_create(rt_base_t flags)
         lwp_user_object_lock_init(new_lwp);
         rt_wqueue_init(&new_lwp->wait_queue);
         lwp_signal_init(&new_lwp->signal);
+        rt_mutex_init(&new_lwp->lwp_lock, "lwp_lock", RT_IPC_FLAG_PRIO);
 
         /* lwp with pid */
         if (flags & LWP_CREATE_FLAG_ALLOC_PID)
@@ -392,6 +393,8 @@ void lwp_free(struct rt_lwp* lwp)
 
     lwp_user_object_clear(lwp);
     lwp_user_object_lock_destroy(lwp);
+    RT_ASSERT(lwp->lwp_lock.owner == RT_NULL);
+    rt_mutex_detach(&lwp->lwp_lock);
 
     /* free data section */
     if (lwp->data_entry != RT_NULL)
@@ -425,6 +428,7 @@ void lwp_free(struct rt_lwp* lwp)
 #ifdef ARCH_MM_MMU
     lwp_unmap_user_space(lwp);
 #endif
+    timer_list_free(&lwp->timer);
 
     level = rt_hw_interrupt_disable();
     /* for children */
@@ -506,7 +510,6 @@ void lwp_free(struct rt_lwp* lwp)
         }
     }
 
-    timer_list_free(&lwp->timer);
     lwp_pid_put(lwp_to_pid(lwp));
     rt_hw_interrupt_enable(level);
     rt_free(lwp);
@@ -706,6 +709,7 @@ pid_t waitpid(pid_t pid, int *status, int options)
         }
         (*lwp_node) = lwp->sibling;
         lwp->parent = RT_NULL;
+        lwp_pid_put(pid);
     }
 
 quit:
